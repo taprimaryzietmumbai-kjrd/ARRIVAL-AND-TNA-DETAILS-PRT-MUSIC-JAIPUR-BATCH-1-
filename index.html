@@ -308,7 +308,7 @@ input[type=text]{width:100%;padding:14px;border:2px solid #d9dfe9;border-radius:
   <h2 style="margin:6px 0 8px">Submit Participant Profile</h2>
   <p class="note">The completed participant profile, teaching information, selected KV and extracted face photo will be sent to the connected Google Sheet / Google Drive record.</p>
   
-<p class="note">After successful submission, a PDF copy of the completed participant form will be generated automatically and saved/downloaded to the participant’s device.</p>
+<p class="note">After successful submission, the completed participant form is converted to PDF and sent for automatic archiving in the designated Google Drive folder. A local PDF can still be generated with the PDF button.</p>
 
 <button type="button" class="addBtn" id="submitBtn" onclick="submitParticipantRecord()" style="font-size:16px;padding:13px 18px">🚀 Submit Participant Record to Google Sheet</button>
   <div id="submitStatus" class="photoStatus" style="margin-top:12px"></div>
@@ -317,7 +317,7 @@ input[type=text]{width:100%;padding:14px;border:2px solid #d9dfe9;border-radius:
 <div class="card submitCard" id="postSubmitCard" style="display:none; margin-top:18px;">
   <div class="step">Submission Complete</div>
   <h2 style="margin:6px 0 8px">✅ Your response has been submitted</h2>
-  <p id="postSubmitMessage" class="note">A PDF copy of your completed form has been generated and downloaded to your device.</p>
+  <p id="postSubmitMessage" class="note">Your completed PDF has been sent for automatic archiving in the designated Google Drive folder.</p>
   <hr style="border:0;border-top:1px solid #ddd;margin:16px 0;">
   <h3 style="margin:0 0 8px">🧭 Have you arrived at your selected terminal / railway station?</h3>
   <p class="note">This question appears only after submission. If you have already arrived, you can open Google Maps for the route from your selected arrival point to KVS ZIET Hostel — A1 Block.</p>
@@ -508,7 +508,7 @@ populatePreferredSessions();
 
 
 <script>
-const GOOGLE_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxfLrtggAi3mMVAEFBguZvigodQWKH4lsKTlJWZuiNXEUw289igr7rVuyUHHrc-GIR2gg/exec";
+const GOOGLE_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwTXz1EXOcWtBI4lNrVPPqTRY6K6PnzDD-4bA_K9jkAv7Tnlahnfouyv9OaIp4ocNkI/exec";
 
 function collectParticipantRecord(){
   const kvIndex=document.getElementById('jaipurKV').value;
@@ -540,29 +540,32 @@ async function submitParticipantRecord(){
   const d=collectParticipantRecord();
   if(!d.participantName || !d.post){status.textContent='Please enter the participant name and select the post/designation.';status.className='photoStatus photoError';return;}
   if(!d.arrivalMode || !d.arrivalNumber || !d.arrivalTerminal){status.textContent='Please select the mode of arrival, enter the train/flight number, and select the arrival terminal / railway station.';status.className='photoStatus photoError';return;}
+  if(!d.arrivalDate || !d.arrivalTime){status.textContent='Please enter the expected date and time of arrival.';status.className='photoStatus photoError';return;}
   if(!d.participantGender || !d.participantCategory){status.textContent='Please select Gender and Social Category.';status.className='photoStatus photoError';return;}
   if(d.teachesKritiMiddle==='Yes' && (!d.kritiMiddlePeriodCount || Number(d.kritiMiddlePeriodCount)<1)){status.textContent='Please enter the number of Middle Stage periods you teach.';status.className='photoStatus photoError';return;}
   if(!d.kv){status.textContent='Please select the Kendriya Vidyalaya.';status.className='photoStatus photoError';return;}
   if(!d.keyFocusAreas.length){status.textContent='Please select at least one Preferred Key Area for Training.';status.className='photoStatus photoError';return;}
   if(d.mostPreferredSessions.length>20){status.textContent='Please select no more than 20 preferred sessions.';status.className='photoStatus photoError';return;}
   btn.disabled=true; btn.classList.add('submitBtnDisabled');
-  status.textContent='⏳ Sending participant record to Google Sheet…'; status.className='photoStatus';
+  status.textContent='⏳ Preparing the participant record and PDF archive…'; status.className='photoStatus';
   try{
+    // Build the PDF before submission so the exact completed form is archived with the record.
+    const pdfBase64=await buildParticipantPDFDataURL();
+    d.pdfBase64=pdfBase64;
+    d.pdfFileName=participantFileName().replace(/\.pdf$/i,'')+'_'+new Date().toISOString().replace(/[:.]/g,'-')+'.pdf';
+    d.pdfMimeType='application/pdf';
     const payload={action:'submitParticipant',data:d};
     await fetch(GOOGLE_APPS_SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(payload)});
-    status.textContent='✅ Submission request sent. Generating your PDF copy on this device…';
+    status.textContent='✅ Participant record submitted. PDF archive request sent to Google Drive.';
     status.className='photoStatus photoSuccess';
-    try{
-      await generateParticipantPDF(true);
-    }catch(pdfErr){
-      console.error(pdfErr);
-      status.textContent+=' PDF generation could not be completed automatically; you can use Print → Save as PDF.';
-    }
     const postCard=document.getElementById('postSubmitCard');
     if(postCard) postCard.style.display='block';
+    const postMsg=document.getElementById('postSubmitMessage');
+    if(postMsg) postMsg.textContent='Your participant record was sent to the connected Google Sheet, and the completed PDF was sent for automatic archiving in the designated Google Drive folder.';
     if(postCard) postCard.scrollIntoView({behavior:'smooth',block:'start'});
   }catch(err){
-    status.textContent='❌ Submission could not be sent. Please check your internet connection and try again.';
+    console.error(err);
+    status.textContent='❌ Submission could not be completed. Please check your internet connection and try again.';
     status.className='photoStatus photoError';
   }finally{btn.disabled=false;btn.classList.remove('submitBtnDisabled');}
 }
@@ -706,37 +709,47 @@ function printParticipantForm(){
   window.print();
 }
 
+async function buildParticipantPDFDataURL(){
+  if(!window.html2canvas || !window.jspdf){
+    throw new Error("PDF libraries could not be loaded. Please check your internet connection and try again.");
+  }
+  const { jsPDF }=window.jspdf;
+  const root=document.body;
+  const canvas=await html2canvas(root,{
+    scale:1.5,
+    useCORS:true,
+    backgroundColor:"#ffffff",
+    logging:false,
+    windowWidth:document.documentElement.scrollWidth
+  });
+  const imgData=canvas.toDataURL("image/jpeg",0.90);
+  const pdf=new jsPDF("p","mm","a4");
+  const pageWidth=210, pageHeight=297;
+  const margin=10, usableWidth=pageWidth-2*margin;
+  const imgHeight=canvas.height*usableWidth/canvas.width;
+  let heightLeft=imgHeight, position=margin;
+  pdf.addImage(imgData,"JPEG",margin,position,usableWidth,imgHeight);
+  heightLeft-=pageHeight-2*margin;
+  while(heightLeft>0){
+    position=margin-heightLeft;
+    pdf.addPage();
+    pdf.addImage(imgData,"JPEG",margin,position,usableWidth,imgHeight);
+    heightLeft-=pageHeight-2*margin;
+  }
+  return pdf.output('datauristring').split(',')[1];
+}
+
 async function generateParticipantPDF(silent=false){
   const btn=document.getElementById("generatePdfBtn");
   if(btn){ btn.disabled=true; btn.textContent="Generating PDF…"; }
   try{
-    if(!window.html2canvas || !window.jspdf){
-      throw new Error("PDF libraries could not be loaded. Please check your internet connection and try again.");
-    }
-    const { jsPDF }=window.jspdf;
-    const root=document.body;
-    const canvas=await html2canvas(root,{
-      scale:1.5,
-      useCORS:true,
-      backgroundColor:"#ffffff",
-      logging:false,
-      windowWidth:document.documentElement.scrollWidth
-    });
-    const imgData=canvas.toDataURL("image/jpeg",0.92);
-    const pdf=new jsPDF("p","mm","a4");
-    const pageWidth=210, pageHeight=297;
-    const margin=10, usableWidth=pageWidth-2*margin;
-    const imgHeight=canvas.height*usableWidth/canvas.width;
-    let heightLeft=imgHeight, position=margin;
-    pdf.addImage(imgData,"JPEG",margin,position,usableWidth,imgHeight);
-    heightLeft-=pageHeight-2*margin;
-    while(heightLeft>0){
-      position=margin-heightLeft;
-      pdf.addPage();
-      pdf.addImage(imgData,"JPEG",margin,position,usableWidth,imgHeight);
-      heightLeft-=pageHeight-2*margin;
-    }
-    pdf.save(participantFileName());
+    const base64=await buildParticipantPDFDataURL();
+    const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
+    const blob=new Blob([bytes],{type:'application/pdf'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=participantFileName(); a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1500);
   }catch(err){
     console.error(err);
     if(!silent) alert("PDF generation could not be completed. You can use the Print button and choose “Save as PDF”.");
