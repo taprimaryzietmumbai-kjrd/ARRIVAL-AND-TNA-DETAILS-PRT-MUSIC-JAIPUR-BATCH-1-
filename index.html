@@ -714,28 +714,78 @@ async function buildParticipantPDFDataURL(){
     throw new Error("PDF libraries could not be loaded. Please check your internet connection and try again.");
   }
   const { jsPDF }=window.jspdf;
-  const root=document.body;
-  const canvas=await html2canvas(root,{
-    scale:1.5,
-    useCORS:true,
-    backgroundColor:"#ffffff",
-    logging:false,
-    windowWidth:document.documentElement.scrollWidth
-  });
-  const imgData=canvas.toDataURL("image/jpeg",0.90);
+  const cards=[...document.querySelectorAll('.card')].filter(el=>getComputedStyle(el).display!=='none');
+  if(!cards.length) throw new Error("No form content available for PDF generation.");
+
   const pdf=new jsPDF("p","mm","a4");
-  const pageWidth=210, pageHeight=297;
-  const margin=10, usableWidth=pageWidth-2*margin;
-  const imgHeight=canvas.height*usableWidth/canvas.width;
-  let heightLeft=imgHeight, position=margin;
-  pdf.addImage(imgData,"JPEG",margin,position,usableWidth,imgHeight);
-  heightLeft-=pageHeight-2*margin;
-  while(heightLeft>0){
-    position=margin-heightLeft;
-    pdf.addPage();
-    pdf.addImage(imgData,"JPEG",margin,position,usableWidth,imgHeight);
-    heightLeft-=pageHeight-2*margin;
+  const pageWidth=210, pageHeight=297, margin=10, gap=5;
+  const usableWidth=pageWidth-2*margin;
+  let y=margin;
+  let firstPage=true;
+
+  const exportStyle=document.createElement('style');
+  exportStyle.id='pdfExportStyle';
+  exportStyle.textContent=`
+    .pdf-export button,
+    .pdf-export input[type=file],
+    .pdf-export .cameraControls,
+    .pdf-export .photoActions,
+    .pdf-export .outputActions { display:none !important; }
+    .pdf-export select, .pdf-export input, .pdf-export textarea { font-size:12px !important; }
+  `;
+  document.head.appendChild(exportStyle);
+  document.body.classList.add('pdf-export');
+
+  try{
+    for(const card of cards){
+      const canvas=await html2canvas(card,{
+        scale:2,
+        useCORS:true,
+        backgroundColor:'#ffffff',
+        logging:false,
+        windowWidth:Math.max(document.documentElement.clientWidth,card.scrollWidth)
+      });
+
+      const imgWidth=usableWidth;
+      const fullImgHeight=canvas.height*imgWidth/canvas.width;
+      let sourceY=0;
+      let remainingPx=canvas.height;
+
+      while(remainingPx>0){
+        const availableMm=pageHeight-margin-y;
+        const availablePx=Math.max(1,Math.floor(availableMm*canvas.width/imgWidth));
+        const slicePx=Math.min(remainingPx,availablePx);
+        const sliceCanvas=document.createElement('canvas');
+        sliceCanvas.width=canvas.width;
+        sliceCanvas.height=slicePx;
+        const ctx=sliceCanvas.getContext('2d');
+        ctx.drawImage(canvas,0,sourceY,canvas.width,slicePx,0,0,canvas.width,slicePx);
+        const sliceHeightMm=slicePx*imgWidth/canvas.width;
+
+        if(!firstPage && y===margin){ pdf.addPage(); }
+        pdf.addImage(sliceCanvas.toDataURL('image/jpeg',0.92),'JPEG',margin,y,imgWidth,sliceHeightMm);
+        firstPage=false;
+        y+=sliceHeightMm;
+        sourceY+=slicePx;
+        remainingPx-=slicePx;
+
+        if(remainingPx>0){
+          pdf.addPage();
+          y=margin;
+        }else{
+          y+=gap;
+          if(y>pageHeight-margin){
+            pdf.addPage();
+            y=margin;
+          }
+        }
+      }
+    }
+  }finally{
+    document.body.classList.remove('pdf-export');
+    exportStyle.remove();
   }
+
   return pdf.output('datauristring').split(',')[1];
 }
 
